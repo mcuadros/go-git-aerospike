@@ -6,10 +6,10 @@ import (
 	"io"
 	"io/ioutil"
 
-	"gopkg.in/src-d/go-git.v4/config"
-	"gopkg.in/src-d/go-git.v4/plumbing"
-	"gopkg.in/src-d/go-git.v4/plumbing/format/index"
-	"gopkg.in/src-d/go-git.v4/plumbing/storer"
+	"srcd.works/go-git.v4/config"
+	"srcd.works/go-git.v4/plumbing"
+	"srcd.works/go-git.v4/plumbing/format/index"
+	"srcd.works/go-git.v4/plumbing/storer"
 
 	driver "github.com/aerospike/aerospike-client-go"
 )
@@ -18,6 +18,7 @@ const (
 	urlField      = "url"
 	referencesSet = "reference"
 	configSet     = "config"
+	typesSet      = "types"
 )
 
 type Storage struct {
@@ -39,7 +40,7 @@ func (s *Storage) NewEncodedObject() plumbing.EncodedObject {
 }
 
 func (s *Storage) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Hash, error) {
-	key, err := s.buildKey(obj.Hash(), obj.Type())
+	key, err := s.buildObjectKey(obj.Hash(), obj.Type())
 	if err != nil {
 		return obj.Hash(), err
 	}
@@ -61,12 +62,37 @@ func (s *Storage) SetEncodedObject(obj plumbing.EncodedObject) (plumbing.Hash, e
 		"blob":   c,
 	}
 
+	if err := s.setEncodedObjectType(obj); err != nil {
+		return obj.Hash(), err
+	}
+
 	err = s.client.Put(nil, key, bins)
 	return obj.Hash(), err
 }
 
+func (s *Storage) setEncodedObjectType(obj plumbing.EncodedObject) error {
+	key, err := s.buildTypeKey(obj.Hash())
+	if err != nil {
+		return err
+	}
+
+	bins := driver.BinMap{
+		"type": obj.Type().String(),
+	}
+
+	return s.client.Put(nil, key, bins)
+}
+
 func (s *Storage) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
-	key, err := s.buildKey(h, t)
+	var err error
+	if t == plumbing.AnyObject {
+		t, err = s.encodedObjectType(h)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	key, err := s.buildObjectKey(h, t)
 	if err != nil {
 		return nil, err
 	}
@@ -83,6 +109,24 @@ func (s *Storage) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbin
 	return objectFromRecord(rec, t)
 }
 
+func (s *Storage) encodedObjectType(h plumbing.Hash) (plumbing.ObjectType, error) {
+	key, err := s.buildTypeKey(h)
+	if err != nil {
+		return plumbing.AnyObject, err
+	}
+
+	rec, err := s.client.Get(nil, key)
+	if err != nil {
+		return plumbing.AnyObject, err
+	}
+
+	if rec == nil {
+		return plumbing.AnyObject, plumbing.ErrObjectNotFound
+	}
+
+	return plumbing.ParseObjectType(rec.Bins["type"].(string))
+
+}
 func (s *Storage) IterEncodedObjects(t plumbing.ObjectType) (storer.EncodedObjectIter, error) {
 	stmnt := driver.NewStatement(s.ns, t.String())
 	err := stmnt.Addfilter(driver.NewEqualFilter(urlField, s.url))
@@ -95,7 +139,11 @@ func (s *Storage) IterEncodedObjects(t plumbing.ObjectType) (storer.EncodedObjec
 	return &EncodedObjectIter{t, rs.Records}, nil
 }
 
-func (s *Storage) buildKey(h plumbing.Hash, t plumbing.ObjectType) (*driver.Key, error) {
+func (s *Storage) buildTypeKey(h plumbing.Hash) (*driver.Key, error) {
+	return driver.NewKey(s.ns, typesSet, h.String())
+}
+
+func (s *Storage) buildObjectKey(h plumbing.Hash, t plumbing.ObjectType) (*driver.Key, error) {
 	return driver.NewKey(s.ns, t.String(), fmt.Sprintf("%s|%s", s.url, h.String()))
 }
 
@@ -178,6 +226,10 @@ func (s *Storage) Reference(n plumbing.ReferenceName) (*plumbing.Reference, erro
 		return nil, err
 	}
 
+	if rec == nil {
+		return nil, plumbing.ErrReferenceNotFound
+	}
+
 	return plumbing.NewReferenceFromStrings(
 		rec.Bins["name"].(string),
 		rec.Bins["target"].(string),
@@ -220,6 +272,10 @@ func (s *Storage) Config() (*config.Config, error) {
 	rec, err := s.client.Get(nil, key)
 	if err != nil {
 		return nil, err
+	}
+
+	if rec == nil {
+		return config.NewConfig(), nil
 	}
 
 	c := &config.Config{}
@@ -329,6 +385,7 @@ func createIndexes(c *driver.Client, ns string) error {
 	for _, set := range [...]string{
 		referencesSet,
 		configSet,
+		typesSet,
 		plumbing.BlobObject.String(),
 		plumbing.TagObject.String(),
 		plumbing.TreeObject.String(),

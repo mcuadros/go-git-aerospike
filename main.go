@@ -5,9 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"gopkg.in/src-d/go-git.v4"
-	. "gopkg.in/src-d/go-git.v4/examples"
-	"gopkg.in/src-d/go-git.v4/examples/storage/aerospike"
+	"github.com/mcuadros/go-git-aerospike/aerospike"
+	"srcd.works/go-git.v4"
+	. "srcd.works/go-git.v4/_examples"
 
 	driver "github.com/aerospike/aerospike-client-go"
 )
@@ -42,7 +42,10 @@ func clone(s git.Storer, url string) {
 	// using the custom storer
 	Info("git clone %s", url)
 
-	_, err := git.Clone(s, nil, &git.CloneOptions{URL: url})
+	_, err := git.Clone(s, nil, &git.CloneOptions{
+		URL:      url,
+		Progress: os.Stdout,
+	})
 	CheckIfError(err)
 }
 
